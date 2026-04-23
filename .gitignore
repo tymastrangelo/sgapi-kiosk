@@ -1,0 +1,23 @@
+# Dependencies — reinstalled on each machine
+node_modules/
+
+# User-uploaded content — lives on the Pi only
+content/*
+!content/.gitkeep
+
+# SQLite database — state, not code
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# System / editor junk
+.DS_Store
+*.log
+*.swp
+.vscode/
+.idea/
+
+# Environment files
+.env
+.env.local

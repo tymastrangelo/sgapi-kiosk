@@ -1,0 +1,14 @@
+{
+  "name": "sgapi-kiosk",
+  "version": "1.0.0",
+  "description": "Kiosk slideshow with web admin panel",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "express": "^4.21.0",
+    "multer": "^1.4.5-lts.1"
+  }
+}

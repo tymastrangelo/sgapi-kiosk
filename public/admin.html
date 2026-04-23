@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sgapi kiosk admin</title>
+<style>
+  :root {
+    --bg: #0b0d10;
+    --panel: #15181d;
+    --border: #252a31;
+    --text: #e8ecf1;
+    --muted: #8b94a3;
+    --accent: #5b8def;
+    --accent-hover: #7aa3ff;
+    --danger: #e5484d;
+    --success: #30a46c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: var(--bg); color: var(--text); min-height: 100vh;
+  }
+  header {
+    padding: 20px 32px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    background: var(--panel);
+  }
+  header h1 { margin: 0; font-size: 20px; font-weight: 600; }
+  header .sub { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  header a {
+    color: var(--accent); text-decoration: none; font-size: 14px;
+    padding: 8px 14px; border: 1px solid var(--border); border-radius: 6px;
+  }
+  header a:hover { background: var(--border); }
+  main { max-width: 900px; margin: 0 auto; padding: 32px; }
+
+  .add-section {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 20px; margin-bottom: 24px;
+  }
+  .add-section h2 { margin: 0 0 16px; font-size: 15px; font-weight: 600; }
+  .tabs { display: flex; gap: 4px; margin-bottom: 16px; }
+  .tab {
+    padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 13px;
+    background: transparent; color: var(--muted); border: 1px solid transparent;
+  }
+  .tab.active { background: var(--border); color: var(--text); border-color: var(--border); }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+  .field label { font-size: 12px; color: var(--muted); }
+  input[type="text"], input[type="number"], input[type="url"] {
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    padding: 10px 12px; border-radius: 6px; font-size: 14px; font-family: inherit;
+  }
+  input:focus { outline: none; border-color: var(--accent); }
+
+  .file-drop {
+    border: 2px dashed var(--border); border-radius: 8px; padding: 32px;
+    text-align: center; cursor: pointer; transition: all 0.15s;
+  }
+  .file-drop:hover, .file-drop.drag { border-color: var(--accent); background: rgba(91,141,239,0.05); }
+  .file-drop input { display: none; }
+  .file-drop .hint { color: var(--muted); font-size: 13px; margin-top: 6px; }
+
+  button {
+    background: var(--accent); color: white; border: 0; padding: 10px 16px;
+    border-radius: 6px; font-size: 14px; cursor: pointer; font-weight: 500;
+  }
+  button:hover { background: var(--accent-hover); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.ghost { background: transparent; color: var(--muted); }
+  button.ghost:hover { background: var(--border); color: var(--text); }
+  button.danger { background: transparent; color: var(--danger); padding: 6px 10px; }
+  button.danger:hover { background: rgba(229,72,77,0.1); }
+
+  .row { display: flex; gap: 10px; align-items: flex-end; }
+  .row .field { flex: 1; margin-bottom: 0; }
+
+  .slides-section { margin-top: 16px; }
+  .slides-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+  .slides-header h2 { margin: 0; font-size: 15px; font-weight: 600; }
+  .slides-header .count { color: var(--muted); font-size: 13px; }
+
+  .slide {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px; margin-bottom: 8px; display: flex; align-items: center; gap: 12px;
+    cursor: grab; transition: border-color 0.15s;
+  }
+  .slide:hover { border-color: var(--accent); }
+  .slide.dragging { opacity: 0.4; }
+  .slide.disabled { opacity: 0.5; }
+  .slide .handle { color: var(--muted); font-size: 18px; user-select: none; }
+  .slide .thumb {
+    width: 64px; height: 48px; border-radius: 4px; background: var(--bg);
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden; flex-shrink: 0;
+  }
+  .slide .thumb img, .slide .thumb video { width: 100%; height: 100%; object-fit: cover; }
+  .slide .thumb .icon { font-size: 20px; }
+  .slide .meta { flex: 1; min-width: 0; }
+  .slide .label {
+    font-size: 14px; font-weight: 500; margin-bottom: 2px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .slide .info { font-size: 12px; color: var(--muted); }
+  .slide .controls { display: flex; gap: 6px; align-items: center; }
+  .slide .duration-input {
+    width: 60px; padding: 6px 8px; font-size: 13px; text-align: center;
+  }
+  .toggle {
+    position: relative; width: 36px; height: 20px; background: var(--border);
+    border-radius: 10px; cursor: pointer; transition: background 0.15s;
+  }
+  .toggle.on { background: var(--success); }
+  .toggle::after {
+    content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px;
+    background: white; border-radius: 50%; transition: left 0.15s;
+  }
+  .toggle.on::after { left: 18px; }
+
+  .empty {
+    text-align: center; padding: 40px; color: var(--muted); font-size: 14px;
+    border: 1px dashed var(--border); border-radius: 8px;
+  }
+  .toast {
+    position: fixed; bottom: 20px; right: 20px; padding: 12px 18px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    font-size: 14px; opacity: 0; transform: translateY(10px); transition: all 0.2s;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.error { border-color: var(--danger); }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>sgapi kiosk</h1>
+    <div class="sub">slideshow admin · <span id="slideCount">0</span> slides</div>
+  </div>
+  <a href="/kiosk" target="_blank">Open kiosk view ↗</a>
+</header>
+
+<main>
+  <div class="add-section">
+    <h2>Add slide</h2>
+    <div class="tabs">
+      <div class="tab active" data-tab="upload">Upload image/video</div>
+      <div class="tab" data-tab="web">Web page URL</div>
+    </div>
+
+    <div class="tab-panel active" data-panel="upload">
+      <label class="file-drop" id="fileDrop">
+        <input type="file" id="fileInput" accept="image/*,video/*">
+        <div><strong>Click or drag a file here</strong></div>
+        <div class="hint">Images or videos, up to 500MB</div>
+      </label>
+      <div class="row" style="margin-top: 12px;">
+        <div class="field">
+          <label>Label (optional)</label>
+          <input type="text" id="uploadLabel" placeholder="e.g. Fall semester flyer">
+        </div>
+        <div class="field" style="flex: 0 0 120px;">
+          <label>Duration (s)</label>
+          <input type="number" id="uploadDuration" value="10" min="1">
+        </div>
+      </div>
+    </div>
+
+    <div class="tab-panel" data-panel="web">
+      <div class="field">
+        <label>URL</label>
+        <input type="url" id="webUrl" placeholder="https://grafana.example.com/dashboard">
+      </div>
+      <div class="row">
+        <div class="field">
+          <label>Label (optional)</label>
+          <input type="text" id="webLabel" placeholder="e.g. Revenue dashboard">
+        </div>
+        <div class="field" style="flex: 0 0 120px;">
+          <label>Duration (s)</label>
+          <input type="number" id="webDuration" value="20" min="1">
+        </div>
+      </div>
+      <button id="addWebBtn" style="margin-top: 12px;">Add web slide</button>
+    </div>
+  </div>
+
+  <div class="slides-section">
+    <div class="slides-header">
+      <h2>Slideshow order</h2>
+      <span class="count">Drag to reorder · changes are live</span>
+    </div>
+    <div id="slideList"></div>
+  </div>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+  const $ = (s) => document.querySelector(s);
+  const slideList = $('#slideList');
+  const toast = $('#toast');
+
+  function showToast(msg, isError = false) {
+    toast.textContent = msg;
+    toast.className = 'toast show' + (isError ? ' error' : '');
+    setTimeout(() => toast.className = 'toast', 2500);
+  }
+
+  async function api(path, opts = {}) {
+    const res = await fetch(path, opts);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Request failed' }));
+      throw new Error(err.error || 'Request failed');
+    }
+    return res.json();
+  }
+
+  // Tabs
+  document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+      tab.classList.add('active');
+      document.querySelector(`[data-panel="${tab.dataset.tab}"]`).classList.add('active');
+    });
+  });
+
+  // File upload
+  const fileDrop = $('#fileDrop');
+  const fileInput = $('#fileInput');
+  fileDrop.addEventListener('dragover', (e) => { e.preventDefault(); fileDrop.classList.add('drag'); });
+  fileDrop.addEventListener('dragleave', () => fileDrop.classList.remove('drag'));
+  fileDrop.addEventListener('drop', (e) => {
+    e.preventDefault();
+    fileDrop.classList.remove('drag');
+    if (e.dataTransfer.files.length) uploadFile(e.dataTransfer.files[0]);
+  });
+  fileInput.addEventListener('change', (e) => {
+    if (e.target.files.length) uploadFile(e.target.files[0]);
+  });
+
+  async function uploadFile(file) {
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('duration', $('#uploadDuration').value);
+    fd.append('label', $('#uploadLabel').value || file.name);
+    showToast('Uploading…');
+    try {
+      await api('/api/slides/upload', { method: 'POST', body: fd });
+      $('#uploadLabel').value = '';
+      fileInput.value = '';
+      showToast('Added ✓');
+      loadSlides();
+    } catch (e) {
+      showToast(e.message, true);
+    }
+  }
+
+  // Web URL
+  $('#addWebBtn').addEventListener('click', async () => {
+    const url = $('#webUrl').value.trim();
+    if (!url) return showToast('URL required', true);
+    try {
+      await api('/api/slides/web', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url,
+          duration: parseInt($('#webDuration').value) || 20,
+          label: $('#webLabel').value || url,
+        }),
+      });
+      $('#webUrl').value = '';
+      $('#webLabel').value = '';
+      showToast('Added ✓');
+      loadSlides();
+    } catch (e) {
+      showToast(e.message, true);
+    }
+  });
+
+  // Render slide list
+  function slideThumb(s) {
+    if (s.type === 'image') return `<img src="/content/${s.src}" alt="">`;
+    if (s.type === 'video') return `<video src="/content/${s.src}" muted></video>`;
+    return `<div class="icon">🌐</div>`;
+  }
+
+  function render(slides) {
+    $('#slideCount').textContent = slides.length;
+    if (!slides.length) {
+      slideList.innerHTML = `<div class="empty">No slides yet. Upload a file or add a URL above.</div>`;
+      return;
+    }
+    slideList.innerHTML = slides.map(s => `
+      <div class="slide ${s.enabled ? '' : 'disabled'}" data-id="${s.id}" draggable="true">
+        <span class="handle">⋮⋮</span>
+        <div class="thumb">${slideThumb(s)}</div>
+        <div class="meta">
+          <div class="label">${escapeHtml(s.label || s.src)}</div>
+          <div class="info">${s.type}${s.type === 'video' ? ' · auto-length' : ` · ${s.duration}s`}</div>
+        </div>
+        <div class="controls">
+          ${s.type !== 'video' ? `<input type="number" class="duration-input" data-id="${s.id}" value="${s.duration}" min="1" title="Duration in seconds">` : ''}
+          <div class="toggle ${s.enabled ? 'on' : ''}" data-id="${s.id}" title="Enable/disable"></div>
+          <button class="danger" data-delete="${s.id}" title="Delete">✕</button>
+        </div>
+      </div>
+    `).join('');
+    attachSlideHandlers();
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  function attachSlideHandlers() {
+    // Delete
+    slideList.querySelectorAll('[data-delete]').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (!confirm('Delete this slide?')) return;
+        await api(`/api/slides/${btn.dataset.delete}`, { method: 'DELETE' });
+        showToast('Deleted');
+        loadSlides();
+      });
+    });
+    // Toggle enabled
+    slideList.querySelectorAll('.toggle').forEach(t => {
+      t.addEventListener('click', async () => {
+        const enabled = !t.classList.contains('on');
+        await api(`/api/slides/${t.dataset.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled }),
+        });
+        loadSlides();
+      });
+    });
+    // Duration edit
+    slideList.querySelectorAll('.duration-input').forEach(inp => {
+      inp.addEventListener('change', async () => {
+        await api(`/api/slides/${inp.dataset.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ duration: parseInt(inp.value) || 10 }),
+        });
+        showToast('Updated');
+      });
+    });
+    // Drag reorder
+    let dragging = null;
+    slideList.querySelectorAll('.slide').forEach(slide => {
+      slide.addEventListener('dragstart', (e) => {
+        dragging = slide;
+        slide.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+      });
+      slide.addEventListener('dragend', () => {
+        slide.classList.remove('dragging');
+        saveOrder();
+      });
+      slide.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        if (!dragging || dragging === slide) return;
+        const rect = slide.getBoundingClientRect();
+        const after = (e.clientY - rect.top) > rect.height / 2;
+        slide.parentNode.insertBefore(dragging, after ? slide.nextSibling : slide);
+      });
+    });
+  }
+
+  async function saveOrder() {
+    const ids = [...slideList.querySelectorAll('.slide')].map(s => parseInt(s.dataset.id));
+    await api('/api/slides/reorder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ order: ids }),
+    });
+    showToast('Order saved');
+  }
+
+  async function loadSlides() {
+    try {
+      const slides = await api('/api/slides');
+      render(slides);
+    } catch (e) {
+      showToast(e.message, true);
+    }
+  }
+
+  loadSlides();
+</script>
+</body>
+</html>

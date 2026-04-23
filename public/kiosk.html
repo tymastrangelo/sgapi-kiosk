@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>sgapi kiosk</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #000; overflow: hidden; cursor: none; }
+  .stage { position: fixed; inset: 0; }
+  .slide {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    opacity: 0; transition: opacity 1s ease-in-out;
+  }
+  .slide.active { opacity: 1; }
+  .slide img, .slide video { max-width: 100%; max-height: 100%; object-fit: contain; }
+  .slide iframe { width: 100%; height: 100%; border: 0; }
+  .status {
+    position: fixed; bottom: 20px; right: 20px;
+    color: rgba(255,255,255,0.15); font-family: system-ui, sans-serif; font-size: 12px;
+  }
+  .empty {
+    color: rgba(255,255,255,0.4); font-family: system-ui, sans-serif; font-size: 24px;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+<div class="stage" id="stage"></div>
+<div class="status" id="status"></div>
+<script>
+  const stage = document.getElementById('stage');
+  const status = document.getElementById('status');
+  let slides = [];
+  let index = 0;
+  let currentEl = null;
+  let currentTimer = null;
+  let nextToken = 0; // prevents race conditions
+
+  async function fetchSlides() {
+    try {
+      const res = await fetch('/api/slides/active');
+      const data = await res.json();
+      // Only reset if the list actually changed
+      const sig = JSON.stringify(data.map(s => [s.id, s.src, s.duration]));
+      if (sig !== slides._sig) {
+        slides = data;
+        slides._sig = sig;
+        if (index >= slides.length) index = 0;
+      }
+    } catch (e) {
+      console.error('Fetch failed', e);
+    }
+  }
+
+  function showEmpty() {
+    stage.innerHTML = `<div class="slide active"><div class="empty">No slides yet.<br><small style="font-size:14px">Add some in the admin panel.</small></div></div>`;
+  }
+
+  function showSlide(slide) {
+    const token = ++nextToken;
+    const div = document.createElement('div');
+    div.className = 'slide';
+    let el;
+
+    if (slide.type === 'image') {
+      el = document.createElement('img');
+      el.src = `/content/${slide.src}`;
+    } else if (slide.type === 'video') {
+      el = document.createElement('video');
+      el.src = `/content/${slide.src}`;
+      el.autoplay = true;
+      el.muted = true;
+      el.playsInline = true;
+    } else if (slide.type === 'web') {
+      el = document.createElement('iframe');
+      el.src = slide.src;
+      el.setAttribute('sandbox', 'allow-same-origin allow-scripts allow-forms allow-popups');
+    }
+
+    div.appendChild(el);
+    stage.appendChild(div);
+    requestAnimationFrame(() => div.classList.add('active'));
+
+    const prev = currentEl;
+    currentEl = div;
+
+    // Fade out the previous slide after the new one finishes fading in
+    if (prev) {
+      prev.classList.remove('active');
+      setTimeout(() => prev.remove(), 1000);
+    }
+
+    // Schedule the next slide
+    clearTimeout(currentTimer);
+    const advance = () => {
+      if (token !== nextToken) return; // cancelled by a newer call
+      index = (index + 1) % slides.length;
+      showSlide(slides[index]);
+    };
+
+    if (slide.type === 'video') {
+      el.addEventListener('ended', advance, { once: true });
+      // Safety fallback in case the video fails to load
+      el.addEventListener('error', () => {
+        console.warn('Video failed, advancing', slide.src);
+        setTimeout(advance, 2000);
+      }, { once: true });
+    } else {
+      currentTimer = setTimeout(advance, (slide.duration || 10) * 1000);
+    }
+
+    status.textContent = `${index + 1} / ${slides.length}`;
+  }
+
+  async function start() {
+    await fetchSlides();
+    if (!slides.length) {
+      showEmpty();
+    } else {
+      showSlide(slides[index]);
+    }
+    // Poll for slide list changes every 30s
+    setInterval(async () => {
+      const oldSig = slides._sig;
+      await fetchSlides();
+      if (oldSig !== slides._sig) {
+        console.log('Slides changed, will pick up on next cycle');
+      }
+      if (!slides.length && stage.querySelector('.empty') === null) {
+        stage.innerHTML = '';
+        showEmpty();
+      }
+    }, 30000);
+  }
+
+  // Reload the whole page daily to keep Chromium healthy (memory leaks, etc.)
+  setTimeout(() => location.reload(), 24 * 60 * 60 * 1000);
+
+  start();
+</script>
+</body>
+</html>

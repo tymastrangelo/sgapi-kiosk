@@ -1,0 +1,17 @@
+[Unit]
+Description=sgapi kiosk backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tymastrangelo
+WorkingDirectory=/home/tymastrangelo/sgapi-kiosk
+ExecStart=/usr/bin/node /home/tymastrangelo/sgapi-kiosk/server.js
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
