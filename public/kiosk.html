@@ -111,8 +111,13 @@
       setTimeout(() => prev.remove(), 1000);
     }
 
-    // Schedule the next slide
+    // Schedule the next slide only when there is something to switch to.
     clearTimeout(currentTimer);
+    if (slides.length <= 1) {
+      status.textContent = `${slides.length ? 1 : 0} / ${slides.length}`;
+      return;
+    }
+
     const advance = () => {
       if (token !== nextToken) return; // cancelled by a newer call
       index = (index + 1) % slides.length;
@@ -145,7 +150,14 @@
       const oldSig = slides._sig;
       await fetchSlides();
       if (oldSig !== slides._sig) {
-        console.log('Slides changed, will pick up on next cycle');
+        console.log('Slides changed, applying updates');
+        if (!slides.length) {
+          stage.innerHTML = '';
+          showEmpty();
+        } else {
+          if (index >= slides.length) index = 0;
+          showSlide(slides[index]);
+        }
       }
       if (!slides.length && stage.querySelector('.empty') === null) {
         stage.innerHTML = '';
