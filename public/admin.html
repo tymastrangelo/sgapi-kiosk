@@ -44,6 +44,7 @@
   .tab {
     padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 13px;
     background: transparent; color: var(--muted); border: 1px solid transparent;
+    user-select: none;
   }
   .tab.active { background: var(--border); color: var(--text); border-color: var(--border); }
   .tab-panel { display: none; }
@@ -57,13 +58,30 @@
   }
   input:focus { outline: none; border-color: var(--accent); }
 
+  /* ---- File drop zone (fixed — proper button semantics, no label/text collision) ---- */
   .file-drop {
-    border: 2px dashed var(--border); border-radius: 8px; padding: 32px;
-    text-align: center; cursor: pointer; transition: all 0.15s;
+    position: relative;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    border: 2px dashed var(--border); border-radius: 8px; padding: 36px 24px;
+    cursor: pointer; transition: all 0.15s;
+    text-align: center; background: transparent;
   }
-  .file-drop:hover, .file-drop.drag { border-color: var(--accent); background: rgba(91,141,239,0.05); }
-  .file-drop input { display: none; }
-  .file-drop .hint { color: var(--muted); font-size: 13px; margin-top: 6px; }
+  .file-drop:hover, .file-drop.drag {
+    border-color: var(--accent); background: rgba(91,141,239,0.05);
+  }
+  .file-drop input[type="file"] {
+    position: absolute; inset: 0; opacity: 0; cursor: pointer;
+  }
+  .file-drop .title {
+    font-size: 15px; font-weight: 600; color: var(--text); margin-bottom: 6px;
+    pointer-events: none;
+  }
+  .file-drop .hint { color: var(--muted); font-size: 13px; pointer-events: none; }
+  .file-drop .selected {
+    margin-top: 10px; font-size: 13px; color: var(--accent);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    pointer-events: none;
+  }
 
   button {
     background: var(--accent); color: white; border: 0; padding: 10px 16px;
@@ -129,6 +147,7 @@
     position: fixed; bottom: 20px; right: 20px; padding: 12px 18px;
     background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
     font-size: 14px; opacity: 0; transform: translateY(10px); transition: all 0.2s;
+    z-index: 100;
   }
   .toast.show { opacity: 1; transform: translateY(0); }
   .toast.error { border-color: var(--danger); }
@@ -147,16 +166,17 @@
   <div class="add-section">
     <h2>Add slide</h2>
     <div class="tabs">
-      <div class="tab active" data-tab="upload">Upload image/video</div>
+      <div class="tab active" data-tab="upload">Upload file</div>
       <div class="tab" data-tab="web">Web page URL</div>
     </div>
 
     <div class="tab-panel active" data-panel="upload">
-      <label class="file-drop" id="fileDrop">
-        <input type="file" id="fileInput" accept="image/*,video/*">
-        <div><strong>Click or drag a file here</strong></div>
-        <div class="hint">Images or videos, up to 500MB</div>
-      </label>
+      <div class="file-drop" id="fileDrop">
+        <input type="file" id="fileInput" accept="image/*,video/*,.html,.htm,text/html">
+        <div class="title">Click or drag a file here</div>
+        <div class="hint">Images, videos, or HTML files — up to 500MB</div>
+        <div class="selected" id="selectedFile"></div>
+      </div>
       <div class="row" style="margin-top: 12px;">
         <div class="field">
           <label>Label (optional)</label>
@@ -232,6 +252,8 @@
   // File upload
   const fileDrop = $('#fileDrop');
   const fileInput = $('#fileInput');
+  const selectedFile = $('#selectedFile');
+
   fileDrop.addEventListener('dragover', (e) => { e.preventDefault(); fileDrop.classList.add('drag'); });
   fileDrop.addEventListener('dragleave', () => fileDrop.classList.remove('drag'));
   fileDrop.addEventListener('drop', (e) => {
@@ -244,6 +266,7 @@
   });
 
   async function uploadFile(file) {
+    selectedFile.textContent = `↑ ${file.name}`;
     const fd = new FormData();
     fd.append('file', file);
     fd.append('duration', $('#uploadDuration').value);
@@ -253,9 +276,11 @@
       await api('/api/slides/upload', { method: 'POST', body: fd });
       $('#uploadLabel').value = '';
       fileInput.value = '';
+      selectedFile.textContent = '';
       showToast('Added ✓');
       loadSlides();
     } catch (e) {
+      selectedFile.textContent = '';
       showToast(e.message, true);
     }
   }
@@ -287,7 +312,15 @@
   function slideThumb(s) {
     if (s.type === 'image') return `<img src="/content/${s.src}" alt="">`;
     if (s.type === 'video') return `<video src="/content/${s.src}" muted></video>`;
+    if (s.type === 'html')  return `<div class="icon">📄</div>`;
     return `<div class="icon">🌐</div>`;
+  }
+
+  function typeLabel(s) {
+    if (s.type === 'video') return 'video · auto-length';
+    if (s.type === 'html')  return `html · ${s.duration}s`;
+    if (s.type === 'web')   return `web · ${s.duration}s`;
+    return `image · ${s.duration}s`;
   }
 
   function render(slides) {
@@ -302,7 +335,7 @@
         <div class="thumb">${slideThumb(s)}</div>
         <div class="meta">
           <div class="label">${escapeHtml(s.label || s.src)}</div>
-          <div class="info">${s.type}${s.type === 'video' ? ' · auto-length' : ` · ${s.duration}s`}</div>
+          <div class="info">${typeLabel(s)}</div>
         </div>
         <div class="controls">
           ${s.type !== 'video' ? `<input type="number" class="duration-input" data-id="${s.id}" value="${s.duration}" min="1" title="Duration in seconds">` : ''}
@@ -319,7 +352,6 @@
   }
 
   function attachSlideHandlers() {
-    // Delete
     slideList.querySelectorAll('[data-delete]').forEach(btn => {
       btn.addEventListener('click', async (e) => {
         e.stopPropagation();
@@ -329,7 +361,6 @@
         loadSlides();
       });
     });
-    // Toggle enabled
     slideList.querySelectorAll('.toggle').forEach(t => {
       t.addEventListener('click', async () => {
         const enabled = !t.classList.contains('on');
@@ -341,7 +372,6 @@
         loadSlides();
       });
     });
-    // Duration edit
     slideList.querySelectorAll('.duration-input').forEach(inp => {
       inp.addEventListener('change', async () => {
         await api(`/api/slides/${inp.dataset.id}`, {
@@ -352,7 +382,6 @@
         showToast('Updated');
       });
     });
-    // Drag reorder
     let dragging = null;
     slideList.querySelectorAll('.slide').forEach(slide => {
       slide.addEventListener('dragstart', (e) => {

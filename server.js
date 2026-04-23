@@ -18,8 +18,8 @@ const db = new Database(DB_PATH);
 db.exec(`
   CREATE TABLE IF NOT EXISTS slides (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    type TEXT NOT NULL,           -- 'image' | 'video' | 'web'
-    src TEXT NOT NULL,            -- filename (for image/video) or URL (for web)
+    type TEXT NOT NULL,           -- 'image' | 'video' | 'web' | 'html'
+    src TEXT NOT NULL,            -- filename (for image/video/html) or URL (for web)
     duration INTEGER DEFAULT 10,  -- seconds; videos ignore this
     position INTEGER NOT NULL,
     label TEXT,
@@ -58,8 +58,11 @@ const upload = multer({
   storage,
   limits: { fileSize: 500 * 1024 * 1024 }, // 500MB
   fileFilter: (req, file, cb) => {
-    const ok = /^(image|video)\//.test(file.mimetype);
-    cb(ok ? null : new Error('Only image/video uploads allowed'), ok);
+    // Allow images, videos, and HTML files (HTML gets rendered in an iframe)
+    const isMedia = /^(image|video)\//.test(file.mimetype);
+    const isHtml = file.mimetype === 'text/html' || /\.html?$/i.test(file.originalname);
+    const ok = isMedia || isHtml;
+    cb(ok ? null : new Error('Only image, video, or HTML uploads allowed'), ok);
   },
 });
 
@@ -74,8 +77,11 @@ app.get('/api/slides/active', (req, res) => {
 
 app.post('/api/slides/upload', upload.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-  const type = req.file.mimetype.startsWith('video/') ? 'video' : 'image';
-  const duration = parseInt(req.body.duration) || 10;
+  let type;
+  if (req.file.mimetype.startsWith('video/')) type = 'video';
+  else if (req.file.mimetype === 'text/html' || /\.html?$/i.test(req.file.originalname)) type = 'html';
+  else type = 'image';
+  const duration = parseInt(req.body.duration) || (type === 'html' ? 20 : 10);
   const label = req.body.label || req.file.originalname;
   const pos = q.maxPos.get().m + 1;
   const info = q.insert.run(type, req.file.filename, duration, pos, label);
@@ -113,6 +119,7 @@ app.post('/api/slides/reorder', (req, res) => {
 app.delete('/api/slides/:id', (req, res) => {
   const slide = q.get.get(req.params.id);
   if (!slide) return res.status(404).json({ error: 'Not found' });
+  // Remove the file from disk for any locally-hosted slide (image/video/html)
   if (slide.type !== 'web') {
     const filePath = path.join(CONTENT_DIR, slide.src);
     if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
