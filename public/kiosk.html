@@ -153,7 +153,9 @@ async function prepare(slide) {
   div.className = 'slide';
 
   let media, backdrop = null;
-  const src = slide.type === 'web' ? slide.src : `/content/${slide.src}`;
+  const src = slide.type === 'web' ? slide.src
+    : slide.type === 'calendar' ? `/calendar?id=${slide.id}`
+    : `/content/${slide.src}`;
 
   if (slide.type === 'image') {
     backdrop = document.createElement('div');
@@ -183,9 +185,11 @@ async function prepare(slide) {
     }
     media = document.createElement('iframe');
     media.src = src;
-    // Uploaded HTML runs without same-origin, so a slide can't reach the API.
-    media.setAttribute('sandbox', slide.type === 'web'
-      ? 'allow-same-origin allow-scripts allow-forms allow-popups'
+    // The calendar page is ours and has to read /api/calendar. Uploaded HTML
+    // runs without same-origin so a slide can't reach the API at all.
+    media.setAttribute('sandbox',
+      slide.type === 'web' ? 'allow-same-origin allow-scripts allow-forms allow-popups'
+      : slide.type === 'calendar' ? 'allow-same-origin allow-scripts'
       : 'allow-scripts');
   }
 
@@ -368,6 +372,17 @@ function connect() {
     offline.classList.remove('show');
     try { applyList(JSON.parse(e.data)); } catch (err) { console.error(err); }
   });
+// A restarted backend means the HTML/JS on this page may be stale. EventSource
+  // reconnects on its own; if it comes back a different process, reload.
+  let knownBoot = null;
+  es.addEventListener('hello', (e) => {
+    try {
+      const { boot } = JSON.parse(e.data);
+      if (knownBoot !== null && boot !== knownBoot) return location.reload();
+      knownBoot = boot;
+    } catch (err) { /* ignore */ }
+  });
+
   es.onopen  = () => offline.classList.remove('show');
   es.onerror = () => offline.classList.add('show'); // EventSource retries on its own
 }

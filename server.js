@@ -7,6 +7,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const dns = require('dns').promises;
 const net = require('net');
+const ical = require('./ical');
 
 const PORT = 8080;
 const ROOT = __dirname;
@@ -55,6 +56,10 @@ app.use('/static', express.static(path.join(ROOT, 'public')));
 // instead of waiting out a polling interval.
 const clients = new Set();
 
+// Changes whenever the service restarts. Pages compare it across reconnects so
+// a deploy refreshes the TV by itself — no need to touch Chromium on the Pi.
+const BOOT_ID = Date.now();
+
 app.get('/api/events', (req, res) => {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -63,6 +68,7 @@ app.get('/api/events', (req, res) => {
     'X-Accel-Buffering': 'no',
   });
   res.write('retry: 3000\n\n');
+  res.write(`event: hello\ndata: ${JSON.stringify({ boot: BOOT_ID })}\n\n`);
   clients.add(res);
   req.on('close', () => clients.delete(res));
 });
@@ -170,40 +176,59 @@ function verdictFrom(res) {
   return { ok: true };
 }
 
-async function probe(startUrl) {
+class Refused extends Error {
+  constructor(code, message) { super(message); this.code = code; }
+}
+
+// The only place this server fetches a URL someone handed it. Redirects are
+// followed by hand so every hop is re-checked — 'follow' would let a public URL
+// bounce the request onto an internal address.
+async function safeFetch(startUrl, { timeout = 8000 } = {}) {
   let target = startUrl;
 
-  // Redirects are followed by hand so every hop gets checked — 'follow' would
-  // let a public URL bounce the request onto an internal address.
   for (let hop = 0; hop < 4; hop++) {
     let parsed;
     try { parsed = new URL(target); }
-    catch (e) { return { ok: false, reason: 'Not a valid web address' }; }
+    catch (e) { throw new Refused('INVALID', 'Not a valid web address'); }
 
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
-      return { ok: false, reason: 'Only http and https pages can be shown' };
+      throw new Refused('SCHEME', 'Only http and https pages can be shown');
 
-    // A dashboard on your own network is a normal thing to put on the kiosk —
-    // the TV's browser loads it directly. This server just won't fetch it.
     // .hostname keeps the brackets around an IPv6 literal; net.isIP won't.
     if (!(await isPublicHost(parsed.hostname.replace(/^\[|\]$/g, ''))))
-      return { ok: true, unverified: true, reason: 'Local network address — not checked from the server' };
+      throw new Refused('PRIVATE', 'Local network address');
 
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 8000);
+    const timer = setTimeout(() => ctrl.abort(), timeout);
     let res;
     try { res = await fetch(target, { redirect: 'manual', signal: ctrl.signal }); }
     finally { clearTimeout(timer); }
-    res.body?.cancel?.();
 
     const location = res.headers.get('location');
     if (res.status >= 300 && res.status < 400 && location) {
+      res.body?.cancel?.();
       target = new URL(location, target).href;
       continue;
     }
-    return verdictFrom(res);
+    return res;
   }
-  return { ok: false, reason: 'Too many redirects' };
+  throw new Refused('REDIRECTS', 'Too many redirects');
+}
+
+async function probe(url) {
+  let res;
+  try {
+    res = await safeFetch(url);
+  } catch (e) {
+    // A dashboard on your own network is a normal thing to put on the kiosk —
+    // the TV's browser loads it directly. This server just won't fetch it.
+    if (e.code === 'PRIVATE')
+      return { ok: true, unverified: true, reason: 'Local network address — not checked from the server' };
+    if (e.code) return { ok: false, reason: e.message };
+    throw e;
+  }
+  res.body?.cancel?.();
+  return verdictFrom(res);
 }
 
 async function checkEmbeddable(url) {
@@ -219,6 +244,32 @@ async function checkEmbeddable(url) {
 
   embedCache.set(url, { at: Date.now(), result });
   return result;
+}
+
+// ---------- Calendar feeds ----------
+// Raw .ics text is cached, not the parsed result — parsing is microseconds and
+// "what's next" has to be computed fresh on every request.
+const icsCache = new Map(); // url -> { at, text }
+
+async function loadIcs(url) {
+  const hit = icsCache.get(url);
+  if (hit && Date.now() - hit.at < 10 * 60 * 1000) return hit.text;
+
+  try {
+    const res = await safeFetch(url, { timeout: 12000 });
+    if (!res.ok) throw new Error(`Calendar returned HTTP ${res.status}`);
+    const text = await res.text();
+    if (!/BEGIN:VCALENDAR/i.test(text)) throw new Error('That URL is not an iCal feed');
+    icsCache.set(url, { at: Date.now(), text });
+    return text;
+  } catch (e) {
+    // Keep showing the last good copy rather than an error on the wall.
+    if (hit) {
+      console.warn('Calendar refresh failed, serving cached copy:', e.message);
+      return hit.text;
+    }
+    throw e;
+  }
 }
 
 // ---------- API ----------
@@ -254,6 +305,38 @@ app.post('/api/slides/web', (req, res) => {
   const info = q.insert.run('web', href, parseInt(duration) || 20, pos, label || href);
   broadcast();
   res.json(q.get.get(info.lastInsertRowid));
+});
+
+app.post('/api/slides/calendar', async (req, res) => {
+  const { url, duration, label } = req.body;
+  if (!url || !String(url).trim()) return res.status(400).json({ error: 'Calendar URL required' });
+  // Google offers a webcal:// link for the same feed; it is plain https.
+  const href = normalizeUrl(String(url).trim().replace(/^webcal:\/\//i, 'https://'));
+
+  let feed;
+  try {
+    feed = ical.upcoming(await loadIcs(href), { limit: 1 });
+  } catch (e) {
+    return res.status(400).json({ error: e.code === 'PRIVATE'
+      ? 'The server has to fetch this feed, so it must be a public URL'
+      : e.message });
+  }
+
+  const pos = q.maxPos.get().m + 1;
+  const info = q.insert.run('calendar', href, parseInt(duration) || 20, pos, label || feed.calName);
+  broadcast();
+  res.json(q.get.get(info.lastInsertRowid));
+});
+
+app.get('/api/calendar/:id', async (req, res) => {
+  const slide = q.get.get(req.params.id);
+  if (!slide || slide.type !== 'calendar') return res.status(404).json({ error: 'Not a calendar slide' });
+  try {
+    const text = await loadIcs(slide.src);
+    res.json(ical.upcoming(text, { limit: parseInt(req.query.limit) || 5 }));
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
 });
 
 app.get('/api/check-embed', async (req, res) => {
@@ -307,6 +390,7 @@ app.use((err, req, res, next) => {
 // ---------- Pages ----------
 app.get('/', (req, res) => res.sendFile(path.join(ROOT, 'public', 'admin.html')));
 app.get('/kiosk', (req, res) => res.sendFile(path.join(ROOT, 'public', 'kiosk.html')));
+app.get('/calendar', (req, res) => res.sendFile(path.join(ROOT, 'public', 'calendar.html')));
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`sgapi kiosk running on http://0.0.0.0:${PORT}`);

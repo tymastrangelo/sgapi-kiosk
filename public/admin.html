@@ -285,6 +285,7 @@
       <div class="tabs" role="tablist">
         <button class="tab active" data-tab="upload" role="tab">Upload files</button>
         <button class="tab" data-tab="web" role="tab">Web page</button>
+        <button class="tab" data-tab="cal" role="tab">Calendar</button>
       </div>
 
       <div class="panel active" data-panel="upload">
@@ -304,6 +305,30 @@
           </div>
         </div>
         <div class="queue" id="queue"></div>
+      </div>
+
+      <div class="panel" data-panel="cal">
+        <div class="field">
+          <label for="calUrl">Google Calendar iCal address</label>
+          <input type="url" id="calUrl" placeholder="https://calendar.google.com/calendar/ical/…/public/basic.ics">
+        </div>
+        <div class="row">
+          <div class="field">
+            <label for="calLabel">Label</label>
+            <input type="text" id="calLabel" placeholder="defaults to the calendar's own name">
+          </div>
+          <div class="field narrow">
+            <label for="calDuration">Seconds</label>
+            <input type="number" id="calDuration" value="20" min="1">
+          </div>
+        </div>
+        <div class="note" id="calNote"></div>
+        <button class="btn" id="addCal" style="margin-top:14px">Add calendar slide</button>
+        <p style="font-size:12px;color:var(--muted);margin:12px 0 0;line-height:1.5">
+          In Google Calendar: Settings → your calendar → <em>Integrate calendar</em> →
+          copy the <strong>public address in iCal format</strong>. The calendar must be
+          public. Events refresh on their own every 10 minutes.
+        </p>
       </div>
 
       <div class="panel" data-panel="web">
@@ -508,6 +533,33 @@ $('#webUrl').addEventListener('blur', () => {
   else webNote.className = 'note';
 });
 
+$('#addCal').addEventListener('click', async () => {
+  const url = $('#calUrl').value.trim();
+  const note = $('#calNote');
+  if (!url) return toast('Calendar URL required', true);
+  note.className = 'note show';
+  note.textContent = 'Reading the calendar…';
+  try {
+    const slide = await api('/api/slides/calendar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url,
+        duration: parseInt($('#calDuration').value) || 20,
+        label: $('#calLabel').value.trim() || '',
+      }),
+    });
+    $('#calUrl').value = '';
+    $('#calLabel').value = '';
+    note.className = 'note';
+    toast(`Added “${slide.label}”`);
+    load();
+  } catch (e) {
+    note.className = 'note show bad';
+    note.textContent = e.message;
+  }
+});
+
 $('#addWeb').addEventListener('click', async () => {
   const url = $('#webUrl').value.trim();
   if (!url) return toast('URL required', true);
@@ -532,16 +584,21 @@ $('#addWeb').addEventListener('click', async () => {
 });
 
 // ---------- rendering ----------
+const ICONS = { html: '📄', web: '🌐', calendar: '📅' };
+
 function thumb(s) {
   if (s.type === 'image') return `<img src="/content/${encodeURIComponent(s.src)}" alt="" loading="lazy">`;
   if (s.type === 'video') return `<video src="/content/${encodeURIComponent(s.src)}#t=0.5" muted preload="metadata"></video>`;
-  return `<div class="icon">${s.type === 'html' ? '📄' : '🌐'}</div>`;
+  return `<div class="icon">${ICONS[s.type] || '🌐'}</div>`;
 }
 
+const KINDS = { web: 'Web page', html: 'HTML', video: 'Video', calendar: 'Calendar', image: 'Image' };
+
 function subtitle(s) {
-  const kind = s.type === 'web' ? 'Web page' : s.type === 'html' ? 'HTML' : s.type === 'video' ? 'Video' : 'Image';
+  const kind = KINDS[s.type] || s.type;
   const len = s.type === 'video' ? 'plays in full' : `${s.duration}s`;
-  const where = s.type === 'web' ? esc(s.src.replace(/^https?:\/\//, '').slice(0, 42)) : '';
+  const where = s.type === 'web' ? esc(s.src.replace(/^https?:\/\//, '').slice(0, 42))
+    : s.type === 'calendar' ? 'live from Google Calendar' : '';
   return `<span class="badge">${kind}</span><span>${len}</span>` +
          (where ? `<span>· ${where}</span>` : '') +
          (s.enabled ? '' : '<span class="badge warn">hidden</span>');
@@ -691,6 +748,18 @@ const events = new EventSource('/api/events');
 events.onopen = () => status('live', 'live · connected to the TV');
 events.onerror = () => status('down', 'reconnecting…');
 events.addEventListener('slides', () => load());
+
+// A restarted backend means the HTML/JS on this page may be stale. EventSource
+// reconnects on its own; if it comes back a different process, reload.
+let knownBoot = null;
+events.addEventListener('hello', (e) => {
+  try {
+    const { boot } = JSON.parse(e.data);
+    if (knownBoot !== null && boot !== knownBoot) return location.reload();
+    knownBoot = boot;
+  } catch (err) { /* ignore */ }
+});
+
 
 // ---------- preview scaling ----------
 const tv = $('#tv'), tvFrame = $('#tvFrame');
