@@ -26,7 +26,7 @@ cat > "$HOME/.config/autostart/sgapi-kiosk.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=sgapi kiosk
-Exec=/bin/bash -c "sleep 8 && xset s off && xset -dpms && xset s noblank && unclutter -idle 1 -root & chromium --kiosk --noerrdialogs --disable-infobars --disable-session-crashed-bubble --disable-features=TranslateUI --check-for-update-interval=31536000 --autoplay-policy=no-user-gesture-required http://localhost:8080/kiosk"
+Exec=/bin/bash -c "sleep 8 && xset s off && xset -dpms && xset s noblank && unclutter -idle 1 -root & chromium --kiosk --noerrdialogs --disable-infobars --disable-session-crashed-bubble --disable-features=TranslateUI --check-for-update-interval=31536000 --autoplay-policy=no-user-gesture-required --enable-gpu-rasterization --ignore-gpu-blocklist --enable-zero-copy --disable-background-timer-throttling http://localhost:8080/kiosk"
 X-GNOME-Autostart-enabled=true
 EOF
 

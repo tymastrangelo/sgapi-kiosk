@@ -2,174 +2,398 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>sgapi kiosk</title>
 <style>
-  html, body { margin: 0; padding: 0; height: 100%; background: #000; overflow: hidden; cursor: none; }
+  :root {
+    --fade: 700ms;
+    --maroon: #73000a;
+    --gold: #e4b95b;
+  }
+
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #000; overflow: hidden; cursor: none;
+    -webkit-font-smoothing: antialiased;
+  }
+
   .stage { position: fixed; inset: 0; }
+
   .slide {
-    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-    opacity: 0; transition: opacity 1s ease-in-out;
+    position: absolute; inset: 0; overflow: hidden;
+    background: #000;
+    opacity: 0; transition: opacity var(--fade) ease-in-out;
   }
-  .slide.active { opacity: 1; }
+  .slide.on { opacity: 1; }
 
-  /* Default: contain (used for vertical images and videos — preserves aspect, letterbox OK) */
-  .slide img, .slide video {
-    width: 100%; height: 100%; object-fit: contain;
-  }
-  /* Horizontal images fill the whole screen (cover), cropping edges if needed */
-  .slide img.horizontal {
-    object-fit: cover;
+  /* Blurred fill behind letterboxed media, so a vertical flyer sits in a soft
+     wash of its own colours instead of two hard black bars. Rendered at 25%
+     size and scaled up 4x — the Pi blurs a quarter-res raster, not a 4K one. */
+  .backdrop {
+    position: absolute; top: 0; left: 0; width: 25%; height: 25%;
+    transform: scale(4); transform-origin: 0 0;
+    background-size: cover; background-position: center;
+    filter: blur(12px) saturate(1.5) brightness(0.45);
   }
 
-  .slide iframe { width: 100%; height: 100%; border: 0; background: #000; }
+  .media { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .media.fill { object-fit: cover; }              /* aspect ≈ screen: edge to edge */
+  .media.fit  { object-fit: contain; }            /* everything else: whole image, backdrop behind */
+  .media.fit  { filter: drop-shadow(0 0 60px rgba(0,0,0,0.55)); }
+  iframe.media { border: 0; background: #fff; }
 
-  .status {
-    position: fixed; bottom: 20px; right: 20px;
-    color: rgba(255,255,255,0.15); font-family: system-ui, sans-serif; font-size: 12px;
+  /* Thin progress line across the bottom — compositor-only, costs nothing. */
+  .progress {
+    position: fixed; left: 0; right: 0; bottom: 0; height: 3px;
+    background: linear-gradient(90deg, var(--maroon), var(--gold));
+    transform: scaleX(0); transform-origin: 0 50%;
+    opacity: 0.55; z-index: 5;
   }
-  .empty {
-    color: rgba(255,255,255,0.4); font-family: system-ui, sans-serif; font-size: 24px;
-    text-align: center;
+  .progress.hidden { opacity: 0; }
+
+  .clock {
+    position: fixed; bottom: 22px; right: 28px; z-index: 5;
+    font: 500 15px/1 ui-rounded, system-ui, sans-serif;
+    color: rgba(255,255,255,0.45);
+    text-shadow: 0 1px 12px rgba(0,0,0,0.9);
+    letter-spacing: 0.02em;
   }
+
+  .offline {
+    position: fixed; bottom: 22px; left: 28px; z-index: 5;
+    font: 500 13px/1 system-ui, sans-serif; color: rgba(255,180,180,0.7);
+    text-shadow: 0 1px 12px rgba(0,0,0,0.9);
+    opacity: 0; transition: opacity 400ms;
+  }
+  .offline.show { opacity: 1; }
+
+  /* Placeholder shown when there is nothing to play, or nothing that can play */
+  .card {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 14px; text-align: center;
+    font-family: system-ui, -apple-system, sans-serif; color: #f5efe1;
+    background:
+      radial-gradient(ellipse at 30% 20%, rgba(228,185,91,0.10), transparent 55%),
+      radial-gradient(ellipse at 70% 80%, rgba(115,0,10,0.35), transparent 55%),
+      #0a0a0c;
+  }
+  .card .mark {
+    font-size: 13px; letter-spacing: 0.32em; text-transform: uppercase;
+    color: var(--gold); margin-bottom: 6px;
+  }
+  .card h1 { margin: 0; font-size: 38px; font-weight: 600; letter-spacing: -0.01em; }
+  .card p  { margin: 0; font-size: 17px; color: rgba(245,239,225,0.55); max-width: 30ch; line-height: 1.5; }
 </style>
 </head>
 <body>
 <div class="stage" id="stage"></div>
-<div class="status" id="status"></div>
+<div class="progress" id="progress"></div>
+<div class="clock" id="clock"></div>
+<div class="offline" id="offline">● offline — showing last known slides</div>
+
 <script>
-  const stage = document.getElementById('stage');
-  const status = document.getElementById('status');
-  let slides = [];
-  let index = 0;
-  let currentEl = null;
-  let currentTimer = null;
-  let nextToken = 0; // prevents race conditions
+const stage    = document.getElementById('stage');
+const progress = document.getElementById('progress');
+const FADE     = 700;
 
-  async function fetchSlides() {
-    try {
-      const res = await fetch('/api/slides/active');
-      const data = await res.json();
-      // Only reset if the list actually changed
-      const sig = JSON.stringify(data.map(s => [s.id, s.src, s.duration]));
-      if (sig !== slides._sig) {
-        slides = data;
-        slides._sig = sig;
-        if (index >= slides.length) index = 0;
-      }
-    } catch (e) {
-      console.error('Fetch failed', e);
+let slides  = [];      // what is currently playing
+let pending = null;    // a newer list, applied at the next slide boundary
+let wake    = null;    // resolver that ends the current wait early
+let parked  = false;   // true while waiting with no timeout of our own
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ---------- loading ----------
+
+async function fetchSlides() {
+  const res = await fetch('/api/slides/active', { cache: 'no-store' });
+  if (!res.ok) throw new Error('bad response');
+  return res.json();
+}
+
+// Resolves when the element is genuinely ready to be shown. For images that
+// means *decoded*, not merely downloaded — starting the crossfade any earlier
+// is what made switches look like a blank flash followed by a pop.
+function whenReady(el, type) {
+  return new Promise((resolve, reject) => {
+    let timer;
+    const done = () => { clearTimeout(timer); resolve(); };
+    const fail = () => { clearTimeout(timer); reject(new Error('load failed')); };
+    // Never let one slow asset stall the whole show.
+    timer = setTimeout(resolve, 12000);
+
+    if (type === 'image') {
+      el.decode().then(done, fail);
+    } else if (type === 'video') {
+      el.addEventListener('canplaythrough', done, { once: true });
+      el.addEventListener('error', fail, { once: true });
+    } else {
+      el.addEventListener('load', done, { once: true });
+      el.addEventListener('error', fail, { once: true });
     }
-  }
+  });
+}
 
-  function showEmpty() {
-    stage.innerHTML = `<div class="slide active"><div class="empty">No slides yet.<br><small style="font-size:14px">Add some in the admin panel.</small></div></div>`;
-  }
+// Decide between filling the screen and fitting inside it. A 16:9 photo on a
+// 16:9 TV should go edge to edge; a portrait flyer must stay whole, with the
+// blurred backdrop covering the rest.
+function applyFraming(media, backdrop, w, h) {
+  const screenAR = window.innerWidth / window.innerHeight;
+  const mediaAR  = w / h;
+  const close    = Math.abs(mediaAR - screenAR) / screenAR < 0.15;
+  media.classList.add(close ? 'fill' : 'fit');
+  if (backdrop) backdrop.style.display = close ? 'none' : '';
+}
 
-  function showSlide(slide) {
-    const token = ++nextToken;
-    const div = document.createElement('div');
-    div.className = 'slide';
-    let el;
+// Builds the slide, attaches it invisibly, and waits until it can be shown.
+// Returns null if the slide cannot be displayed at all.
+async function prepare(slide) {
+  const div = document.createElement('div');
+  div.className = 'slide';
 
-    if (slide.type === 'image') {
-      el = document.createElement('img');
-      el.src = `/content/${slide.src}`;
-      // Smart fill: once the image loads, mark it horizontal or vertical.
-      // Horizontal images fill the screen (cover, crops edges). Vertical images
-      // use contain (letterboxed, whole image visible).
-      el.addEventListener('load', () => {
-        if (el.naturalWidth >= el.naturalHeight) {
-          el.classList.add('horizontal');
+  let media, backdrop = null;
+  const src = slide.type === 'web' ? slide.src : `/content/${slide.src}`;
+
+  if (slide.type === 'image') {
+    backdrop = document.createElement('div');
+    backdrop.className = 'backdrop';
+    backdrop.style.backgroundImage = `url("${src}")`;
+    div.appendChild(backdrop);
+    media = document.createElement('img');
+    media.src = src;
+  } else if (slide.type === 'video') {
+    media = document.createElement('video');
+    media.src = src;
+    media.autoplay = true;
+    media.muted = true;
+    media.playsInline = true;
+    media.preload = 'auto';
+  } else {
+    // A site that refuses framing renders as Chromium's broken-page icon and
+    // there is no client-side way to detect it, so ask the server first.
+    if (slide.type === 'web') {
+      try {
+        const check = await (await fetch(`/api/check-embed?url=${encodeURIComponent(slide.src)}`)).json();
+        if (!check.ok) {
+          console.warn('Skipping web slide:', slide.src, check.reason);
+          return null;
         }
-      }, { once: true });
-    } else if (slide.type === 'video') {
-      el = document.createElement('video');
-      el.src = `/content/${slide.src}`;
-      el.autoplay = true;
-      el.muted = true;
-      el.playsInline = true;
-    } else if (slide.type === 'web') {
-      el = document.createElement('iframe');
-      el.src = slide.src;
-      el.setAttribute('sandbox', 'allow-same-origin allow-scripts allow-forms allow-popups');
-    } else if (slide.type === 'html') {
-      el = document.createElement('iframe');
-      el.src = `/content/${slide.src}`;
-      el.setAttribute('sandbox', 'allow-same-origin allow-scripts');
+      } catch (e) { /* probe unavailable — try the iframe anyway */ }
+    }
+    media = document.createElement('iframe');
+    media.src = src;
+    // Uploaded HTML runs without same-origin, so a slide can't reach the API.
+    media.setAttribute('sandbox', slide.type === 'web'
+      ? 'allow-same-origin allow-scripts allow-forms allow-popups'
+      : 'allow-scripts');
+  }
+
+  media.className = 'media';
+  div.appendChild(media);
+  stage.appendChild(div); // in the DOM (still invisible) so decoding can start
+
+  try {
+    await whenReady(media, slide.type);
+  } catch (e) {
+    console.warn('Slide failed to load:', slide.label || slide.src);
+    div.remove();
+    return null;
+  }
+
+  if (slide.type === 'image') applyFraming(media, backdrop, media.naturalWidth, media.naturalHeight);
+  else if (slide.type === 'video') applyFraming(media, null, media.videoWidth || 16, media.videoHeight || 9);
+  else media.classList.add('fill');
+
+  return { slide, div, media };
+}
+
+// ---------- playback ----------
+
+function crossfade(outgoing, incoming) {
+  requestAnimationFrame(() => incoming.div.classList.add('on'));
+  if (outgoing) {
+    outgoing.div.classList.remove('on');
+    setTimeout(() => outgoing.div.remove(), FADE);
+  }
+}
+
+function runProgress(seconds) {
+  progress.classList.toggle('hidden', !(seconds > 0));
+  progress.style.transition = 'none';
+  progress.style.transform = 'scaleX(0)';
+  void progress.offsetWidth; // flush, so the reset isn't animated
+  if (seconds > 0) {
+    progress.style.transition = `transform ${seconds}s linear`;
+    progress.style.transform = 'scaleX(1)';
+  }
+}
+
+// Waits out one slide, ending early if the playlist changed underneath us.
+function dwell(ms) {
+  return new Promise((resolve) => {
+    parked = false;
+    const timer = setTimeout(resolve, ms);
+    wake = () => { clearTimeout(timer); wake = null; resolve(); };
+  });
+}
+
+// Waits with nothing to time out — a lone slide, or a placeholder card. Only a
+// playlist change can end this, so applyList must always wake it.
+function holdUntilChange() {
+  return new Promise((resolve) => {
+    parked = true;
+    wake = () => { wake = null; resolve(); };
+  });
+}
+
+// Built like any other slide so the normal crossfade disposes of it.
+function makeCard(title, body) {
+  const div = document.createElement('div');
+  div.className = 'slide';
+  div.innerHTML =
+    `<div class="card"><div class="mark">SGA @ Elon</div>` +
+    `<h1>${title}</h1><p>${body}</p></div>`;
+  stage.appendChild(div);
+  progress.classList.add('hidden');
+  return { div };
+}
+
+async function play() {
+  let index = 0;
+  let current = null;
+  let queued = null;   // slide prepared during the previous one's dwell
+  let misses = 0;      // consecutive slides that refused to load
+
+  for (;;) {
+    if (pending) { slides = pending; pending = null; index = 0; misses = 0; }
+
+    if (!slides.length) {
+      if (queued) { queued.div.remove(); queued = null; }
+      const card = makeCard('Nothing scheduled', 'Add a slide from the admin panel and it will appear here instantly.');
+      crossfade(current, card);
+      current = card; visibleId = null;
+      await holdUntilChange();
+      continue;
     }
 
-    div.appendChild(el);
-    stage.appendChild(div);
-    requestAnimationFrame(() => div.classList.add('active'));
+    const slide = slides[index % slides.length];
+    // Reuse the preloaded one when it is still the slide we want.
+    let next = queued && queued.slide.id === slide.id ? queued : null;
+    if (queued && queued !== next) { queued.div.remove(); }
+    queued = null;
+    if (!next) next = await prepare(slide);
 
-    const prev = currentEl;
-    currentEl = div;
+    if (!next) {
+      // Broken file or unembeddable site — move on, unless everything is broken.
+      if (++misses >= slides.length) {
+        const card = makeCard('No playable slides', 'Every slide failed to load. Check the admin panel.');
+        crossfade(current, card);
+        current = card; visibleId = null;
+        await holdUntilChange();
+        misses = 0;
+        continue;
+      }
+      index++;
+      continue;
+    }
+    misses = 0;
 
-    // Fade out the previous slide after the new one finishes fading in
-    if (prev) {
-      prev.classList.remove('active');
-      setTimeout(() => prev.remove(), 1000);
+    crossfade(current, next);
+    current = next;
+    visibleId = slide.id;
+
+    const single = slides.length === 1;
+    if (slide.type === 'video') {
+      const len = Number.isFinite(current.media.duration) ? current.media.duration : 0;
+      current.media.loop = single;
+      runProgress(single ? 0 : len);
+    } else {
+      runProgress(single ? 0 : (slide.duration || 10));
     }
 
-    // Schedule the next slide only when there is something to switch to.
-    clearTimeout(currentTimer);
-    if (slides.length <= 1) {
-      status.textContent = `${slides.length ? 1 : 0} / ${slides.length}`;
-      return;
-    }
+    // A lone slide just stays up — no pointless fade from itself to itself.
+    if (single) { await holdUntilChange(); index = 0; continue; }
 
-    const advance = () => {
-      if (token !== nextToken) return; // cancelled by a newer call
-      index = (index + 1) % slides.length;
-      showSlide(slides[index]);
-    };
+    // Preload the next slide while this one is on screen. This is the whole
+    // trick: by the time the dwell ends, the next image is already decoded.
+    const upcoming = slides[(index + 1) % slides.length];
+    const preloading = prepare(upcoming).then((p) => { queued = p; }).catch(() => {});
 
     if (slide.type === 'video') {
-      el.addEventListener('ended', advance, { once: true });
-      // Safety fallback in case the video fails to load
-      el.addEventListener('error', () => {
-        console.warn('Video failed, advancing', slide.src);
-        setTimeout(advance, 2000);
-      }, { once: true });
+      const finished = Promise.race([
+        new Promise((r) => {
+          current.media.addEventListener('ended', r, { once: true });
+          current.media.addEventListener('error', r, { once: true });
+        }),
+        holdUntilChange(),
+      ]);
+      parked = false; // the video has its own end; don't let an edit truncate it
+      await finished;
     } else {
-      currentTimer = setTimeout(advance, (slide.duration || 10) * 1000);
+      await dwell((slide.duration || 10) * 1000);
     }
+    wake = null;
 
-    status.textContent = `${index + 1} / ${slides.length}`;
+    await preloading; // so `queued` is settled before the next iteration reads it
+    index++;
   }
+}
 
-  async function start() {
-    await fetchSlides();
-    if (!slides.length) {
-      showEmpty();
-    } else {
-      showSlide(slides[index]);
-    }
-    // Poll for slide list changes every 30s
-    setInterval(async () => {
-      const oldSig = slides._sig;
-      await fetchSlides();
-      if (oldSig !== slides._sig) {
-        console.log('Slides changed, applying updates');
-        if (!slides.length) {
-          stage.innerHTML = '';
-          showEmpty();
-        } else {
-          if (index >= slides.length) index = 0;
-          showSlide(slides[index]);
-        }
-      }
-      if (!slides.length && stage.querySelector('.empty') === null) {
-        stage.innerHTML = '';
-        showEmpty();
-      }
-    }, 30000);
-  }
+// ---------- live updates ----------
 
-  // Reload the whole page daily to keep Chromium healthy (memory leaks, etc.)
-  setTimeout(() => location.reload(), 24 * 60 * 60 * 1000);
+function sameList(a, b) {
+  return JSON.stringify(a.map((s) => [s.id, s.src, s.duration, s.type])) ===
+         JSON.stringify(b.map((s) => [s.id, s.src, s.duration, s.type]));
+}
 
-  start();
+// Id of whatever is on screen, so applyList can tell if it just got deleted.
+let visibleId = null;
+
+function applyList(list) {
+  if (sameList(list, slides)) return;
+  pending = list;
+  // Interrupt immediately if the visible slide vanished; otherwise let it play
+  // out its full duration so nobody sees a mid-slide jump.
+  // Wake immediately when the wait has no end of its own, or when the slide on
+  // screen just got deleted. Otherwise let it play out its full duration.
+  const survived = list.some((s) => s.id === visibleId);
+  if ((parked || !survived) && wake) wake();
+}
+
+function connect() {
+  const es = new EventSource('/api/events');
+  const offline = document.getElementById('offline');
+  es.addEventListener('slides', (e) => {
+    offline.classList.remove('show');
+    try { applyList(JSON.parse(e.data)); } catch (err) { console.error(err); }
+  });
+  es.onopen  = () => offline.classList.remove('show');
+  es.onerror = () => offline.classList.add('show'); // EventSource retries on its own
+}
+
+// Belt and braces: if the event stream dies silently behind a proxy, a slow
+// poll still picks changes up.
+setInterval(() => fetchSlides().then(applyList).catch(() => {}), 5 * 60 * 1000);
+
+// ---------- clock ----------
+const clock = document.getElementById('clock');
+const tick = () => { clock.textContent = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); };
+tick();
+setInterval(tick, 15000);
+
+// Reload daily to keep Chromium healthy (memory leaks, etc.)
+setTimeout(() => location.reload(), 24 * 60 * 60 * 1000);
+
+// Re-frame media when the TV resolution changes (rare, but free to handle).
+window.addEventListener('resize', () => { if (wake) wake(); });
+
+(async function boot() {
+  try { slides = await fetchSlides(); }
+  catch (e) { console.error('Initial load failed', e); }
+  connect();
+  play();
+})();
 </script>
 </body>
 </html>
